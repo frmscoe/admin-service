@@ -641,9 +641,7 @@ describe('TCS Config Logic Service', () => {
         id: 1,
         msgFam: 'ISO20022',
         mapping: [],
-        payload: {
-          accounts: [{ Id: 'account-id' }],
-        },
+        payload: [{ account: { Id: 'account-id' } }],
       };
       const newMapping = {
         source: ['Id'],
@@ -656,9 +654,7 @@ describe('TCS Config Logic Service', () => {
       };
 
       (handleGetDataModelJson as jest.Mock).mockResolvedValue({
-        transactionDetails: {
-          accounts: [{ Id: 'account-id' }],
-        },
+        transactionDetails: [{ account: { Id: 'account-id' } }],
       });
       (tcsConfigRepository.findConfigById as jest.Mock).mockResolvedValue(mockConfig);
       (tcsConfigRepository.updateConfig as jest.Mock).mockResolvedValue(mockUpdatedConfig);
@@ -713,6 +709,41 @@ describe('TCS Config Logic Service', () => {
 
       await expect(tcsConfigService.handleAddMapping(1, mockTenantId, existingMapping)).rejects.toMatchObject({
         message: 'Mapping with the same source and destination already exists',
+        status: HttpStatus.CONFLICT,
+      });
+
+      expect(tcsConfigRepository.updateConfig).not.toHaveBeenCalled();
+    });
+
+    it('should throw HTTP 409 when destination is already mapped with another source', async () => {
+      const existingMapping = {
+        source: ['FIToFIPmtSts.GrpHdr.MsgId'],
+        destination: 'transactionDetails.MsgId',
+        type: 'direct',
+      };
+      const mockConfig = {
+        id: 1,
+        msgFam: 'ISO20022',
+        mapping: [existingMapping],
+        payload: {
+          FIToFIPmtSts: {
+            GrpHdr: {
+              CreDtTm: 'created-at',
+            },
+          },
+        },
+      };
+
+      (tcsConfigRepository.findConfigById as jest.Mock).mockResolvedValue(mockConfig);
+
+      await expect(
+        tcsConfigService.handleAddMapping(1, mockTenantId, {
+          source: ['FIToFIPmtSts.GrpHdr.CreDtTm'],
+          destination: 'transactionDetails.MsgId',
+          type: 'direct',
+        } as any),
+      ).rejects.toMatchObject({
+        message: 'Mapping destination is already mapped: transactionDetails.MsgId',
         status: HttpStatus.CONFLICT,
       });
 

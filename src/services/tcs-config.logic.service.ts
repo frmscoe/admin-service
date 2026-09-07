@@ -31,6 +31,12 @@ const mappingsHaveSameComposite = (mapping: FieldMapping, newMapping: FieldMappi
   JSON.stringify(mapping.source) === JSON.stringify(newMapping.source) &&
   JSON.stringify(mapping.destination) === JSON.stringify(newMapping.destination);
 
+const normalizeSource = (source?: string | string[]): string[] | undefined =>
+  Array.isArray(source) ? source : source ? [source] : undefined;
+
+const normalizeDestination = (destination?: string | string[]): string[] =>
+  Array.isArray(destination) ? destination : destination ? [destination] : [];
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const jsonPathExistsAtAnyLayer = (json: unknown, path: string): boolean => {
@@ -80,7 +86,7 @@ const validateMappingDestinationsExistInDataModel = (
   dataModelJson: Record<string, unknown> | null,
   destination?: string | string[],
 ): void => {
-  const destinations = Array.isArray(destination) ? destination : destination ? [destination] : [];
+  const destinations = normalizeDestination(destination);
   if (destinations.length === 0) return;
 
   if (dataModelJson === null) {
@@ -93,6 +99,25 @@ const validateMappingDestinationsExistInDataModel = (
       `Mapping destination does not exist in data model JSON: ${missingDestinations.join(', ')}`,
       HttpStatus.BAD_REQUEST,
     );
+  }
+};
+
+const validateMappingIsUnique = (existingMappings: FieldMapping[], newMapping: FieldMapping): void => {
+  const newDestinations = normalizeDestination(newMapping.destination);
+  const alreadyMappedDestinations = new Set<string>();
+
+  for (const mapping of existingMappings) {
+    if (mappingsHaveSameComposite(mapping, newMapping)) {
+      throw new HttpException('Mapping with the same source and destination already exists', HttpStatus.CONFLICT);
+    }
+
+    normalizeDestination(mapping.destination).forEach((destination) => {
+      if (newDestinations.includes(destination)) alreadyMappedDestinations.add(destination);
+    });
+  }
+
+  if (alreadyMappedDestinations.size > 0) {
+    throw new HttpException(`Mapping destination is already mapped: ${[...alreadyMappedDestinations].join(', ')}`, HttpStatus.CONFLICT);
   }
 };
 
@@ -318,7 +343,8 @@ export const handleAddMapping = async (id: number, tenantId: string, mappingDto:
       throw new Error('Config not found');
     }
 
-    const normalizedSource = Array.isArray(mappingDto.source) ? mappingDto.source : mappingDto.source ? [mappingDto.source] : undefined;
+    const existingMappings = config.mapping ?? [];
+    const normalizedSource = normalizeSource(mappingDto.source as string | string[] | undefined);
 
     const newMapping: FieldMapping = {
       ...mappingDto,
@@ -327,15 +353,12 @@ export const handleAddMapping = async (id: number, tenantId: string, mappingDto:
       type: mappingDto.type,
     };
 
-    const mappingAlreadyExists = (config.mapping ?? []).some((mapping) => mappingsHaveSameComposite(mapping, newMapping));
-    if (mappingAlreadyExists) {
-      throw new HttpException('Mapping with the same source and destination already exists', HttpStatus.CONFLICT);
-    }
-
+    validateMappingIsUnique(existingMappings, newMapping);
     validateMappingSourcesExistInPayload(config.payload, normalizedSource);
-    validateMappingDestinationsExistInDataModel(await handleGetDataModelJson(tenantId), newMapping.destination);
+    const dataModelJson = await handleGetDataModelJson(tenantId);
+    validateMappingDestinationsExistInDataModel(dataModelJson, newMapping.destination);
 
-    const updatedMappings = [...(config.mapping ?? []), newMapping];
+    const updatedMappings = [...existingMappings, newMapping];
 
     const updatedConfig = await updateConfig(id, tenantId, { mapping: updatedMappings });
     loggerService.log(`Successfully added mapping to config ${id}`);
