@@ -24,7 +24,102 @@ import {
   getRelatedTransactions,
 } from '../repositories/configuration/tcs.config.repository';
 import type { ConfigData, ConfigInput, ConfigResponse } from '../interface/config.interface';
-import { HttpException } from '../utils/error';
+import { HttpException, HttpStatus } from '../utils/error';
+import { handleGetDataModelJson } from './data-model.logic.service';
+
+const mappingsHaveSameComposite = (mapping: FieldMapping, newMapping: FieldMapping): boolean =>
+  JSON.stringify(mapping.source) === JSON.stringify(newMapping.source) &&
+  JSON.stringify(mapping.destination) === JSON.stringify(newMapping.destination);
+
+const normalizeSource = (source?: string | string[]): string[] | undefined =>
+  Array.isArray(source) ? source : source ? [source] : undefined;
+
+const normalizeDestination = (destination?: string | string[]): string[] =>
+  Array.isArray(destination) ? destination : destination ? [destination] : [];
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const jsonPathExistsAtAnyLayer = (json: unknown, path: string): boolean => {
+  const segments = path.split('.').filter(Boolean);
+  if (segments.length === 0) return false;
+
+  const hasPath = (value: unknown, remainingSegments: string[]): boolean => {
+    if (remainingSegments.length === 0) return true;
+
+    if (Array.isArray(value)) {
+      return value.some((item) => hasPath(item, remainingSegments));
+    }
+
+    if (!isRecord(value)) return false;
+
+    const [nextSegment, ...rest] = remainingSegments;
+    if (!Object.prototype.hasOwnProperty.call(value, nextSegment)) return false;
+
+    return hasPath(value[nextSegment], rest);
+  };
+
+  const hasPathAtAnyLayer = (value: unknown): boolean => {
+    if (hasPath(value, segments)) return true;
+
+    if (Array.isArray(value)) {
+      return value.some(hasPathAtAnyLayer);
+    }
+
+    if (!isRecord(value)) return false;
+
+    return Object.values(value).some(hasPathAtAnyLayer);
+  };
+
+  return hasPathAtAnyLayer(json);
+};
+
+const validateMappingSourcesExistInPayload = (payload: unknown, source?: string[]): void => {
+  if (!source?.length) return;
+
+  const missingSources = source.filter((sourcePath) => !jsonPathExistsAtAnyLayer(payload, sourcePath));
+  if (missingSources.length > 0) {
+    throw new HttpException(`Mapping source does not exist in payload_json: ${missingSources.join(', ')}`, HttpStatus.BAD_REQUEST);
+  }
+};
+
+const validateMappingDestinationsExistInDataModel = (
+  dataModelJson: Record<string, unknown> | null,
+  destination?: string | string[],
+): void => {
+  const destinations = normalizeDestination(destination);
+  if (destinations.length === 0) return;
+
+  if (dataModelJson === null) {
+    throw new HttpException('Data model JSON not found', HttpStatus.BAD_REQUEST);
+  }
+
+  const missingDestinations = destinations.filter((destinationPath) => !jsonPathExistsAtAnyLayer(dataModelJson, destinationPath));
+  if (missingDestinations.length > 0) {
+    throw new HttpException(
+      `Mapping destination does not exist in data model JSON: ${missingDestinations.join(', ')}`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+};
+
+const validateMappingIsUnique = (existingMappings: FieldMapping[], newMapping: FieldMapping): void => {
+  const newDestinations = normalizeDestination(newMapping.destination);
+  const alreadyMappedDestinations = new Set<string>();
+
+  for (const mapping of existingMappings) {
+    if (mappingsHaveSameComposite(mapping, newMapping)) {
+      throw new HttpException('Mapping with the same source and destination already exists', HttpStatus.CONFLICT);
+    }
+
+    normalizeDestination(mapping.destination).forEach((destination) => {
+      if (newDestinations.includes(destination)) alreadyMappedDestinations.add(destination);
+    });
+  }
+
+  if (alreadyMappedDestinations.size > 0) {
+    throw new HttpException(`Mapping destination is already mapped: ${[...alreadyMappedDestinations].join(', ')}`, HttpStatus.CONFLICT);
+  }
+};
 
 export const handlePostConfig = async (config: ConfigInput, tenantId: string): Promise<{ message: string; result: ConfigResponse }> => {
   try {
@@ -248,7 +343,8 @@ export const handleAddMapping = async (id: number, tenantId: string, mappingDto:
       throw new Error('Config not found');
     }
 
-    const normalizedSource = Array.isArray(mappingDto.source) ? mappingDto.source : mappingDto.source ? [mappingDto.source] : undefined;
+    const existingMappings = config.mapping ?? [];
+    const normalizedSource = normalizeSource(mappingDto.source as string | string[] | undefined);
 
     const newMapping: FieldMapping = {
       ...mappingDto,
@@ -257,12 +353,18 @@ export const handleAddMapping = async (id: number, tenantId: string, mappingDto:
       type: mappingDto.type,
     };
 
-    const updatedMappings = [...(config.mapping ?? []), newMapping];
+    validateMappingIsUnique(existingMappings, newMapping);
+    validateMappingSourcesExistInPayload(config.payload, normalizedSource);
+    const dataModelJson = await handleGetDataModelJson(tenantId);
+    validateMappingDestinationsExistInDataModel(dataModelJson, newMapping.destination);
+
+    const updatedMappings = [...existingMappings, newMapping];
 
     const updatedConfig = await updateConfig(id, tenantId, { mapping: updatedMappings });
     loggerService.log(`Successfully added mapping to config ${id}`);
     return updatedConfig;
   } catch (error) {
+    if (error instanceof HttpException) throw error;
     const errorMessage = error as { message: string };
     loggerService.error(`Error adding mapping: ${errorMessage.message}`, 'handleAddMapping');
     throw new Error('Failed to add mapping');
