@@ -80,7 +80,7 @@ export const createConfig = async (config: ConfigData, id?: number): Promise<num
         config.tenantId,
         config.createdBy,
         config.publishing_status ?? 'inactive',
-        config.relatedTransaction ?? null,
+        config.related_transaction ?? null,
         payloadValue,
       ]
     : [
@@ -96,7 +96,7 @@ export const createConfig = async (config: ConfigData, id?: number): Promise<num
         config.tenantId,
         config.createdBy,
         config.publishing_status ?? 'inactive',
-        config.relatedTransaction ?? null,
+        config.related_transaction ?? null,
         payloadValue,
       ];
 
@@ -218,6 +218,27 @@ export const findConfigsByStatus = async (
     limit,
     offset,
   };
+};
+
+export const findConfigsByMsgFam = async (msgFam: string, tenantId: string): Promise<string[]> => {
+  const query = `
+    SELECT DISTINCT endpoint_path
+    FROM tcs_config
+    WHERE msg_fam = $1 AND tenant_id = $2
+    ORDER BY endpoint_path ASC
+  `;
+
+  const values = [msgFam, tenantId];
+
+  const result = await handlePostExecuteSqlStatement<{ endpoint_path: string }>(
+    {
+      text: query,
+      values,
+    } satisfies PgQueryConfig,
+    'configuration',
+  );
+
+  return result.rows.map((row) => row.endpoint_path);
 };
 
 export const updateConfig = async (

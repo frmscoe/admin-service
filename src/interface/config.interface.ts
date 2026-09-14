@@ -17,7 +17,7 @@ export interface ConfigData {
   publishing_status?: string;
   payload?: string | object;
   creDtTm?: string;
-  relatedTransaction?: string;
+  related_transaction?: string;
 }
 
 export interface ConfigRow {
