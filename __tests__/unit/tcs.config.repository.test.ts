@@ -11,10 +11,12 @@ import {
   createConfig,
   findConfigById,
   findConfigsByStatus,
+  findConfigsByMsgFam,
   updateConfig,
   findAllTransactionTypes,
   getPayloadByTransactionType,
   getSchemaByTransactionType,
+  getSchemaByTransactionTypew3,
   createTransactionTypeTable,
   createTazamaDataModelTable,
   updateConfigByStatus,
@@ -1409,6 +1411,130 @@ describe('TCS Config Repository', () => {
 
       const callArg = (handlePostExecuteSqlStatement as jest.Mock).mock.calls[0][0] as { values: string[] };
       expect(callArg.values).toEqual(['tenant-1', 'pacs.008', '001.08', 'tenant-2', 'pacs.002', '001.03']);
+    });
+  });
+
+  describe('findConfigsByMsgFam', () => {
+    it('should return distinct endpoint paths for a given msg_fam', async () => {
+      const mockRows = [{ endpoint_path: '/api/pain001' }, { endpoint_path: '/api/pacs008' }];
+      mockHandlePostExecuteSqlStatement.mockResolvedValue({ rows: mockRows, rowCount: 2 } as never);
+
+      const result = await findConfigsByMsgFam('ISO20022', 'tenant-123');
+
+      expect(result).toEqual(['/api/pain001', '/api/pacs008']);
+      expect(mockHandlePostExecuteSqlStatement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining('SELECT DISTINCT endpoint_path'),
+          values: ['ISO20022', 'tenant-123'],
+        }),
+        'configuration',
+      );
+    });
+
+    it('should return empty array when no configs match', async () => {
+      mockHandlePostExecuteSqlStatement.mockResolvedValue({ rows: [], rowCount: 0 } as never);
+
+      const result = await findConfigsByMsgFam('unknown', 'tenant-123');
+
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('updateConfig - additional field coverage', () => {
+    const mockUpdatedRow = {
+      id: 1,
+      msg_fam: 'pain',
+      transaction_type: 'pain.001.001.11',
+      endpoint_path: '/api/pain001',
+      version: '1.0',
+      content_type: ContentType.JSON,
+      schema: { type: 'object' },
+      payload_xml: null,
+      payload_json: { data: 'test' },
+      comments: null,
+      mapping: null,
+      functions: null,
+      status: ConfigStatus.IN_PROGRESS,
+      publishing_status: 'inactive',
+      created_at: '2026-01-01',
+      updated_at: '2026-01-02',
+      tenant_id: 'tenant-123',
+      created_by: 'user-123',
+      related_transaction: null,
+    };
+
+    it('should handle endpointPath update', async () => {
+      mockHandlePostExecuteSqlStatement.mockResolvedValue({ rows: [mockUpdatedRow], rowCount: 1 } as never);
+
+      await updateConfig(1, 'tenant-123', { endpointPath: '/api/new-path' });
+
+      const callArg = (mockHandlePostExecuteSqlStatement as jest.Mock).mock.calls[0][0] as { text: string; values: unknown[] };
+      expect(callArg.text).toContain('endpoint_path = $1');
+      expect(callArg.values[0]).toBe('/api/new-path');
+    });
+
+    it('should handle version update', async () => {
+      mockHandlePostExecuteSqlStatement.mockResolvedValue({ rows: [mockUpdatedRow], rowCount: 1 } as never);
+
+      await updateConfig(1, 'tenant-123', { version: '2.0' });
+
+      const callArg = (mockHandlePostExecuteSqlStatement as jest.Mock).mock.calls[0][0] as { text: string; values: unknown[] };
+      expect(callArg.text).toContain('version = $1');
+      expect(callArg.values[0]).toBe('2.0');
+    });
+  });
+
+  describe('getSchemaByTransactionTypew3', () => {
+    it('should get schema, mapping, and functions', async () => {
+      const mockResult = {
+        schema: { type: 'object' },
+        mapping: [{ field: 'value' }],
+        functions: [{ name: 'func1' }],
+      };
+
+      mockHandlePostExecuteSqlStatement.mockResolvedValue({
+        rows: [mockResult],
+        rowCount: 1,
+      } as never);
+
+      const result = await getSchemaByTransactionTypew3('pain.001.001.11', '1.0', 'tenant-123');
+
+      expect(result.schema).toEqual({ type: 'object' });
+      expect(result.mapping).toEqual([{ field: 'value' }]);
+      expect(result.functions).toEqual([{ name: 'func1' }]);
+      expect(mockHandlePostExecuteSqlStatement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          values: ['pain.001.001.11', '1.0', 'tenant-123'],
+        }),
+        'configuration',
+      );
+    });
+
+    it('should throw error when transaction type is missing', async () => {
+      await expect(getSchemaByTransactionTypew3('', '1.0', 'tenant-123')).rejects.toThrow(
+        'Transaction type, version, and tenant ID are required',
+      );
+    });
+
+    it('should throw error when version is missing', async () => {
+      await expect(getSchemaByTransactionTypew3('pain.001.001.11', '', 'tenant-123')).rejects.toThrow(
+        'Transaction type, version, and tenant ID are required',
+      );
+    });
+
+    it('should throw error when tenant ID is missing', async () => {
+      await expect(getSchemaByTransactionTypew3('pain.001.001.11', '1.0', '')).rejects.toThrow(
+        'Transaction type, version, and tenant ID are required',
+      );
+    });
+
+    it('should throw error when configuration not found', async () => {
+      mockHandlePostExecuteSqlStatement.mockResolvedValue({
+        rows: [],
+        rowCount: 0,
+      } as never);
+
+      await expect(getSchemaByTransactionTypew3('pain.001.001.11', '1.0', 'tenant-123')).rejects.toThrow('Configuration not found');
     });
   });
 });
